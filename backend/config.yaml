@@ -1,0 +1,43 @@
+# =====================================================
+# LOG MANAGER - KONFIGURACJA
+# =====================================================
+
+# Agent
+agent:
+  interval: 5  # sekundy między skanowaniami
+
+# Elasticsearch
+elasticsearch:
+  enabled: true
+  hosts:
+    - "http://localhost:9200"
+  index_prefix: "logs"
+
+# Zrodla - LISTA (dodaj swoje zrodla ponizej)
+# Pusta lista na start - dodawaj przez interfejs lub tutaj
+sources: []
+
+# Przykłady (odkomentuj i dostosuj):
+#
+# - name: system-logs
+#   type: file
+#   enabled: true
+#   path: "C:/logs"
+#   patterns:
+#     - "*.log"
+#     - "*.txt"
+#
+# - name: mysql-prod
+#   type: mysql
+#   enabled: true
+#   host: "localhost"
+#   port: 3306
+#   user: "root"
+#   password: "haslo"
+#   database: "nazwa_bazy"
+#
+# - name: mongodb-app
+#   type: mongodb
+#   enabled: true
+#   uri: "mongodb://localhost:27017"
+#   database: "myapp"

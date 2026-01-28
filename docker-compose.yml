@@ -1,0 +1,90 @@
+# =====================================================
+# LOG MANAGER - DOCKER COMPOSE
+# Elasticsearch + Kibana + Backend
+# =====================================================
+
+version: '3.8'
+
+services:
+  # -------------------------------------------------
+  # ELASTICSEARCH
+  # -------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: log-manager-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - cluster.name=log-manager
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - log-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # -------------------------------------------------
+  # KIBANA
+  # -------------------------------------------------
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: log-manager-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - XPACK_SECURITY_ENABLED=false
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=a]7L@JdCm5bKzF)3z8P-qN!6sW+rY1Tv
+      # Wyłącz Fleet/Agent (problem z registry)
+      - XPACK_FLEET_AGENTS_ENABLED=false
+      - XPACK_FLEET_ENABLED=false
+    ports:
+      - "5601:5601"
+    networks:
+      - log-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q '\"overall\":{\"level\":\"available\"}'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # -------------------------------------------------
+  # BACKEND
+  # -------------------------------------------------
+  backend:
+    build: ./backend
+    container_name: log-manager-backend
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/config.yaml:/app/config.yaml
+      - ./logs:/app/logs  # Folder z logami do monitorowania
+    networks:
+      - log-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  log-network:
+    driver: bridge
+
+volumes:
+  es_data:
+    driver: local
