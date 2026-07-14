@@ -135,8 +135,8 @@
                      class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2">
             </div>
             <div class="bg-blue-900 bg-opacity-30 border border-blue-700 rounded p-3 text-sm">
-              <p class="text-blue-300 font-medium mb-1">MySQL general_log must be enabled:</p>
-              <code class="text-xs text-gray-300">SET GLOBAL general_log = 'ON';<br>SET GLOBAL log_output = 'TABLE';</code>
+              <p class="text-blue-300 font-medium mb-1">SQL traffic monitoring</p>
+              <p class="text-xs text-gray-300">After adding the source, Log Manager enables MySQL query logging automatically. Use a local root account (XAMPP) or an account permitted to change MySQL global settings.</p>
             </div>
           </template>
 

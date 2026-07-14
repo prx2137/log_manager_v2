@@ -5,6 +5,7 @@ Sources - Klasy do czytania logow z roznych zrodel
 import os
 import time
 import hashlib
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -283,6 +284,13 @@ class MySQLSource(BaseSource):
         self.user = config.get('user', 'root')
         self.password = config.get('password', '')
         self.database = config.get('database', '')
+        # Przy dodaniu źródła MySQL lokalnego włącz automatycznie dziennik
+        # zapytań. Można wyłączyć wyłącznie w konfiguracji zaawansowanej.
+        self.auto_enable_general_log = config.get('auto_enable_general_log', True)
+        self._general_log_configured = False
+        # Baza wybrana przez poszczególne połączenia MySQL (thread_id).
+        self._thread_databases: Dict[int, str] = {}
+        self._seen_events: set = set()
         
         # Opcje monitorowania
         self.monitor_table = config.get('monitor_table', '')
@@ -304,6 +312,8 @@ class MySQLSource(BaseSource):
         self._last_event_time = None
         self._last_id = 0
         self._initialized = False
+        self._thread_databases.clear()
+        self._seen_events.clear()
         print(f"[MySQL] Reset tracking dla {self.name}")
     
     def _get_connection(self):
@@ -408,120 +418,138 @@ class MySQLSource(BaseSource):
         
         return logs
     
+    def _configure_general_log(self, cursor) -> bool:
+        """Włącz dziennik SQL wymagany do monitorowania ruchu bazy."""
+        cursor.execute("SHOW VARIABLES LIKE 'general_log'")
+        general_log = cursor.fetchone()
+        cursor.execute("SHOW VARIABLES LIKE 'log_output'")
+        log_output = cursor.fetchone()
+        enabled = general_log and str(general_log.get('Value', '')).upper() == 'ON'
+        table_output = log_output and 'TABLE' in str(log_output.get('Value', '')).upper()
+
+        if enabled and table_output:
+            self._general_log_configured = True
+            return True
+        if not self.auto_enable_general_log:
+            self.last_error = ("Dziennik zapytań MySQL jest wyłączony. Włącz general_log "
+                               "oraz log_output=TABLE dla tego źródła.")
+            return False
+        try:
+            # Ustawienia są świadomie wykonywane tylko przy dodanym źródle SQL.
+            # Wymagają konta z uprawnieniem SYSTEM_VARIABLES_ADMIN (root w XAMPP).
+            if not table_output:
+                cursor.execute("SET GLOBAL log_output = 'TABLE'")
+            if not enabled:
+                cursor.execute("SET GLOBAL general_log = 'ON'")
+            self._general_log_configured = True
+            return True
+        except Exception as exc:
+            self.last_error = ("Nie można włączyć monitorowania SQL. Połącz źródło kontem root "
+                               "albo nadaj SYSTEM_VARIABLES_ADMIN i SELECT do mysql.general_log. "
+                               f"Szczegóły: {exc}")
+            return False
+
+    def _event_key(self, row: Dict[str, Any]) -> str:
+        value = '|'.join(str(row.get(field, '')) for field in
+                         ('event_time', 'thread_id', 'command_type', 'argument'))
+        return hashlib.sha1(value.encode('utf-8', errors='ignore')).hexdigest()
+
+    def _belongs_to_selected_database(self, row: Dict[str, Any], argument: str) -> bool:
+        """Określ, czy wpis pochodzi z połączenia używającego wybranej bazy."""
+        if not self.database:
+            return True
+        thread_id = row.get('thread_id')
+        command = str(row.get('command_type', '')).upper()
+        database = self.database.lower()
+        normalized = argument.strip().strip('`').lower()
+        if command == 'CONNECT':
+            # MySQL zapisuje bazę w wpisie połączenia, np.
+            # "root@localhost on stacja_ladowarek".
+            match = re.search(r'\bon\s+`?([^`\s]+)`?$', argument, re.IGNORECASE)
+            if match:
+                self._thread_databases[thread_id] = match.group(1).lower()
+            return False
+        if command == 'INIT DB' or normalized.startswith('use '):
+            selected = normalized[4:].strip().strip('`').rstrip(';').lower()
+            if selected:
+                self._thread_databases[thread_id] = selected
+            return False
+        # General log nie zapisuje nazwy schematu przy każdym SQL. MySQL
+        # zapisuje ją przy Connect/Init DB, więc pamiętamy ją per thread.
+        return self._thread_databases.get(thread_id) == database
+
     def _collect_from_general_log(self) -> List[ParsedLog]:
-        """Zbierz logi z mysql.general_log"""
+        """Zbierz nowe operacje SQL z mysql.general_log."""
         logs = []
-        
+        cursor = None
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
-            
-            # Sprawdz czy general_log jest wlaczony
-            cursor.execute("SHOW VARIABLES LIKE 'general_log'")
-            result = cursor.fetchone()
-            
-            if not result or result.get('Value') != 'ON':
-                self.last_error = "general_log jest wylaczony. Uruchom w MySQL: SET GLOBAL general_log = 'ON'; SET GLOBAL log_output = 'TABLE';"
-                cursor.close()
+            if not self._configure_general_log(cursor):
                 return []
-            
-            # Sprawdz log_output
-            cursor.execute("SHOW VARIABLES LIKE 'log_output'")
-            result = cursor.fetchone()
-            
-            if not result or 'TABLE' not in result.get('Value', ''):
-                self.last_error = "log_output musi byc 'TABLE'. Uruchom: SET GLOBAL log_output = 'TABLE';"
-                cursor.close()
-                return []
-            
-            # Czas startowy - przy pierwszym uruchomieniu od teraz
+
             if self._last_event_time is None:
-                self._last_event_time = datetime.now() - timedelta(seconds=5)
+                self._last_event_time = datetime.now() - timedelta(minutes=5)
                 self._initialized = True
                 print(f"[MySQL] Inicjalizacja - start od {self._last_event_time}")
-            
-            # Pobierz nowe logi - filtruj tylko wazne operacje
+
             query = """
-                SELECT event_time, user_host, command_type, argument
+                SELECT event_time, thread_id, user_host, command_type, argument
                 FROM mysql.general_log
-                WHERE event_time > %s
-                AND command_type IN ('Query', 'Execute')
+                WHERE event_time >= %s
+                  AND command_type IN ('Connect', 'Query', 'Execute', 'Init DB')
                 ORDER BY event_time ASC
-                LIMIT 500
+                LIMIT 1000
             """
-            
             cursor.execute(query, (self._last_event_time,))
             rows = cursor.fetchall()
-            
             for row in rows:
                 event_time = row.get('event_time')
                 if event_time and event_time > self._last_event_time:
                     self._last_event_time = event_time
-                
+                key = self._event_key(row)
+                if key in self._seen_events:
+                    continue
+                self._seen_events.add(key)
                 argument = row.get('argument', '')
                 if isinstance(argument, bytes):
                     argument = argument.decode('utf-8', errors='ignore')
-                
-                # Filtruj - tylko INSERT, UPDATE, DELETE, SELECT
                 arg_upper = argument.upper().strip()
-                
-                # Pomijaj wewnetrzne zapytania MySQL
-                if arg_upper.startswith('SHOW ') or arg_upper.startswith('SET '):
+                # Nie wyświetlaj zapytań wykonywanych przez sam Log Manager.
+                if (arg_upper.startswith(('SHOW ', 'SET ')) or
+                    'mysql.general_log' in argument.lower() or
+                    'information_schema' in argument.lower()):
                     continue
-                if 'general_log' in argument.lower():
+                if not self._belongs_to_selected_database(row, argument):
                     continue
-                if 'information_schema' in argument.lower():
-                    continue
-                
-                # Okresl typ operacji
-                event_type = 'QUERY'
-                severity = 'INFO'
-                
-                if arg_upper.startswith('INSERT'):
-                    event_type = 'INSERT'
-                    severity = 'INFO'
-                elif arg_upper.startswith('UPDATE'):
-                    event_type = 'UPDATE'
-                    severity = 'WARN'
-                elif arg_upper.startswith('DELETE'):
-                    event_type = 'DELETE'
-                    severity = 'WARN'
-                elif arg_upper.startswith('SELECT'):
-                    event_type = 'SELECT'
-                    severity = 'DEBUG'
-                elif arg_upper.startswith('CREATE'):
-                    event_type = 'CREATE'
-                    severity = 'INFO'
-                elif arg_upper.startswith('DROP'):
-                    event_type = 'DROP'
-                    severity = 'ERROR'
-                elif arg_upper.startswith('ALTER'):
-                    event_type = 'ALTER'
-                    severity = 'WARN'
-                
-                # Utworz ParsedLog
-                parsed = ParsedLog(
+
+                event_type, severity = 'QUERY', 'INFO'
+                for prefix, kind, level in (
+                    ('INSERT', 'INSERT', 'INFO'), ('UPDATE', 'UPDATE', 'WARN'),
+                    ('DELETE', 'DELETE', 'WARN'), ('SELECT', 'SELECT', 'DEBUG'),
+                    ('CREATE', 'CREATE', 'INFO'), ('DROP', 'DROP', 'ERROR'),
+                    ('ALTER', 'ALTER', 'WARN')):
+                    if arg_upper.startswith(prefix):
+                        event_type, severity = kind, level
+                        break
+                logs.append(ParsedLog(
                     timestamp=event_time.isoformat() if isinstance(event_time, datetime) else str(event_time),
-                    source=self.name,
-                    event_type=event_type,
-                    severity=severity,
-                    message=argument[:500],  # Skroc dlugie zapytania
-                    raw=argument,
-                    user=str(row.get('user_host', ''))
-                )
-                
-                logs.append(parsed)
-            
-            cursor.close()
-            
+                    source=self.name, event_type=event_type, severity=severity,
+                    message=argument[:500], raw=argument,
+                    user=str(row.get('user_host', ''))))
+
+            # Limit pamięci używanej do odrzucania zduplikowanych rekordów.
+            if len(self._seen_events) > 10000:
+                self._seen_events = set(list(self._seen_events)[-5000:])
+            self.last_error = None
             if logs:
-                self.last_error = None
-                print(f"[MySQL] Zebrano {len(logs)} logow")
-            
+                print(f"[MySQL] Zebrano {len(logs)} logow z bazy {self.database or 'wszystkie'}")
         except Exception as e:
             self.last_error = str(e)
             print(f"[MySQL ERROR] {e}")
-        
+        finally:
+            if cursor:
+                cursor.close()
         return logs
 
 
