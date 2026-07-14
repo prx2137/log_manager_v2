@@ -10,7 +10,7 @@ echo ====================================================
 echo           LOG MANAGER v2
 echo ====================================================
 echo.
-echo   [1] Uruchom wszystko (Docker + Backend + Frontend)
+echo   [1] Uruchom wszystko lokalnie (Elasticsearch/Kibana + Backend + Frontend)
 echo   [2] Tylko Backend
 echo   [3] Tylko Frontend
 echo   [4] Docker (Elasticsearch + Kibana)
@@ -37,7 +37,7 @@ goto MENU
 :RUN_ALL
 echo.
 echo [*] Uruchamiam Docker...
-docker-compose up -d
+docker-compose -f docker-compose-dev.yml up -d
 echo.
 echo [*] Czekam na Elasticsearch (30s)...
 timeout /t 30 /nobreak > nul
@@ -83,7 +83,7 @@ goto MENU
 :RUN_DOCKER
 echo.
 echo [*] Uruchamiam Docker (Elasticsearch + Kibana)...
-docker-compose up -d
+docker-compose -f docker-compose-dev.yml up -d
 echo.
 echo [*] Czekam na uruchomienie...
 timeout /t 30 /nobreak
@@ -97,7 +97,7 @@ goto MENU
 :STOP_DOCKER
 echo.
 echo [*] Zatrzymuje Docker...
-docker-compose down
+docker-compose -f docker-compose-dev.yml down
 echo [OK] Docker zatrzymany
 pause
 goto MENU
@@ -108,7 +108,7 @@ echo === STATUS ===
 echo.
 
 echo [Docker]
-docker-compose ps 2>nul
+docker-compose -f docker-compose-dev.yml ps 2>nul
 echo.
 
 echo [Elasticsearch]
@@ -150,7 +150,7 @@ echo.
 echo ====================================================
 echo   SETUP ZAKONCZONY!
 echo.
-echo   Teraz wybierz opcje 1 aby uruchomic aplikacje.
+echo   Teraz wybierz opcje 1 aby uruchomic aplikacje lokalnie.
 echo ====================================================
 pause
 goto MENU

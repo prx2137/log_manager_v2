@@ -85,18 +85,30 @@ async def init_elasticsearch():
     """Inicjalizuj polaczenie z Elasticsearch"""
     global es_storage, ES_ENABLED
     
-    if not ES_ENABLED:
+    es_config = config.elasticsearch
+    es_enabled = os.environ.get(
+        'ELASTICSEARCH_ENABLED', str(es_config.get('enabled', True))
+    ).lower() in ('1', 'true', 'yes', 'on')
+
+    if not ES_ENABLED or not es_enabled:
         print("[INFO] Elasticsearch wylaczony")
         return
-    
-    # Pobierz host z env lub domyslnie localhost
-    es_host = os.environ.get('ELASTICSEARCH_HOSTS', 'http://localhost:9200')
-    
-    print(f"[INFO] Laczenie z Elasticsearch: {es_host}")
-    
+
+    # Zmienna środowiskowa ma pierwszeństwo (w kontenerze wskazuje usługę
+    # `elasticsearch`); lokalnie używana jest wartość z config.yaml.
+    env_hosts = os.environ.get('ELASTICSEARCH_HOSTS')
+    if env_hosts:
+        es_hosts = [host.strip() for host in env_hosts.split(',') if host.strip()]
+    else:
+        configured_hosts = es_config.get('hosts', ['http://localhost:9200'])
+        es_hosts = configured_hosts if isinstance(configured_hosts, list) else [configured_hosts]
+
+    index_prefix = es_config.get('index_prefix', 'log-manager')
+    print(f"[INFO] Laczenie z Elasticsearch: {', '.join(es_hosts)}")
+
     es_storage = ElasticsearchStorage(
-        hosts=[es_host],
-        index_prefix="log-manager"
+        hosts=es_hosts,
+        index_prefix=index_prefix
     )
     
     connected = await es_storage.connect()
