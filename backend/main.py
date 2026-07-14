@@ -216,7 +216,9 @@ def collector_loop():
                     print(f"[{name}] Zebrano {len(processed_logs)} logow")
                 
                 source.last_check = datetime.now()
-                source.last_error = None
+                # collect() ustawia last_error także dla błędów obsłużonych
+                # wewnętrznie (np. brak SELECT do mysql.general_log). Nie
+                # kasuj go tutaj, bo panel Sources musi go pokazać.
                 
             except Exception as e:
                 source.last_error = str(e)
@@ -261,6 +263,8 @@ class SourceConfig(BaseModel):
     monitor_table: Optional[str] = None
     monitor_column: Optional[str] = None
     timestamp_column: Optional[str] = None
+    auto_enable_general_log: Optional[bool] = None
+    strict_database_filter: Optional[bool] = None
 
 # ============================================
 # ENDPOINTY API

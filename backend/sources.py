@@ -287,6 +287,10 @@ class MySQLSource(BaseSource):
         # Przy dodaniu źródła MySQL lokalnego włącz automatycznie dziennik
         # zapytań. Można wyłączyć wyłącznie w konfiguracji zaawansowanej.
         self.auto_enable_general_log = config.get('auto_enable_general_log', True)
+        # Domyślnie nie odrzucaj wpisów z sesji, która rozpoczęła się przed
+        # uruchomieniem monitora. Jej wcześniejszy Init DB nie będzie już w
+        # obserwowanym oknie general_log, więc bazy nie da się ustalić.
+        self.strict_database_filter = config.get('strict_database_filter', False)
         self._general_log_configured = False
         # Baza wybrana przez poszczególne połączenia MySQL (thread_id).
         self._thread_databases: Dict[int, str] = {}
@@ -469,14 +473,26 @@ class MySQLSource(BaseSource):
             if match:
                 self._thread_databases[thread_id] = match.group(1).lower()
             return False
-        if command == 'INIT DB' or normalized.startswith('use '):
+        if command == 'INIT DB':
+            # Dla Init DB argument zawiera samą nazwę bazy, bez słowa USE.
+            selected = normalized.rstrip(';').strip('`')
+            if selected:
+                self._thread_databases[thread_id] = selected
+            return False
+        if normalized.startswith('use '):
             selected = normalized[4:].strip().strip('`').rstrip(';').lower()
             if selected:
                 self._thread_databases[thread_id] = selected
             return False
         # General log nie zapisuje nazwy schematu przy każdym SQL. MySQL
         # zapisuje ją przy Connect/Init DB, więc pamiętamy ją per thread.
-        return self._thread_databases.get(thread_id) == database
+        # Dla już istniejącej sesji Init DB może być starszy niż obserwowane
+        # okno. Wtedy nie znamy bazy i domyślnie przepuszczamy wpis, zamiast
+        # gubić poprawne zdarzenia z phpMyAdmin.
+        selected_database = self._thread_databases.get(thread_id)
+        if selected_database is None:
+            return not self.strict_database_filter
+        return selected_database == database
 
     def _collect_from_general_log(self) -> List[ParsedLog]:
         """Zbierz nowe operacje SQL z mysql.general_log."""
