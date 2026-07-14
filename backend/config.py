@@ -67,8 +67,8 @@ class Config:
     
     @property
     def elasticsearch(self) -> Dict[str, Any]:
-        """Zwraca konfigurację Elasticsearch."""
-        return self.storage.get('elasticsearch', {})
+        """Zwraca konfigurację Elasticsearch z sekcji głównej YAML."""
+        return self._config.get('elasticsearch', {})
     
     def get_source(self, name: str) -> Optional[Dict[str, Any]]:
         """Zwraca konfigurację źródła po nazwie."""
